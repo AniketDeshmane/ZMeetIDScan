@@ -1,87 +1,87 @@
-name: Build5
+name: Build Android App
 
 env:
   # The name of the main module repository
   main_project_module: app
 
 on:
-
   push:
     branches:
+      - 'main'
       - 'release/**'
-
+  pull_request:
+    branches:
+      - 'main'
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 1. Checkout code
+        uses: actions/checkout@v4
 
       # Set Current Date As Env Variable
-      - name: Set current date as env variable
+      - name: 2. Set current date as env variable
         run: echo "date_today=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
 
       # Set Repository Name As Env Variable
-      - name: Set repository name as env variable
+      - name: 3. Set repository name as env variable
         run: echo "repository_name=$(echo '${{ github.repository }}' | awk -F '/' '{print $2}')" >> $GITHUB_ENV
 
-      # Set Play Store Name Dynamically
-      - name: Set playstore name as env variable
-        run: echo "playstore_name=${{ github.repository }}" >> $GITHUB_ENV
+      # Set Play Store Name without forward slash
+      - name: 4. Set playstore name as env variable
+        run: echo "playstore_name=$(echo '${{ github.repository }}' | sed 's/\//-/')" >> $GITHUB_ENV
 
-      - name: Set Up JDK
+      - name: 5. Set Up JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu' # See 'Supported distributions' for available options
+          distribution: 'zulu'
           java-version: '17'
           cache: 'gradle'
 
-      - name: Change wrapper permissions
+      - name: 6. Change wrapper permissions
         run: chmod +x ./gradlew
 
       # Run Tests Build
-      - name: Run gradle tests
+      - name: 7. Run gradle tests
         run: ./gradlew test
 
       # Run Build Project
-      - name: Build gradle project
+      - name: 8. Build gradle project
         run: ./gradlew build
 
       # Create APK Debug
-      - name: Build apk debug project (APK) - ${{ env.main_project_module }} module
+      - name: 9. Build apk debug project (APK)
         run: ./gradlew assembleDebug
 
       # Create APK Release
-      - name: Build apk release project (APK) - ${{ env.main_project_module }} module
+      - name: 10. Build apk release project (APK)
         run: ./gradlew assemble
 
       # Create Bundle AAB Release
-      # Noted for main module build [main_project_module]:bundleRelease
-      - name: Build app bundle release (AAB) - ${{ env.main_project_module }} module
+      - name: 11. Build app bundle release (AAB)
         run: ./gradlew ${{ env.main_project_module }}:bundleRelease
 
-      # Upload Artifact Build
-      # Noted For Output [main_project_module]/build/outputs/apk/debug/
-      - name: Upload APK Debug - ${{ env.repository_name }}
+      # Upload APK Debug
+      - name: 12. Upload APK Debug
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - APK(s) debug generated
+          name: ${{ env.date_today }}-${{ env.repository_name }}-debug-apk
           path: ${{ env.main_project_module }}/build/outputs/apk/debug/
 
-      # Noted For Output [main_project_module]/build/outputs/apk/release/
-      - name: Upload APK Release - ${{ env.repository_name }}
+      # Upload APK Release
+      - name: 13. Upload APK Release
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - APK(s) release generated
+          name: ${{ env.date_today }}-${{ env.repository_name }}-release-apk
           path: ${{ env.main_project_module }}/build/outputs/apk/release/
 
-      # Noted For Output [main_project_module]/build/outputs/bundle/release/
-      - name: Upload AAB (App Bundle) Release - ${{ env.repository_name }}
+      # Upload AAB Release
+      - name: 14. Upload AAB (App Bundle) Release
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.date_today }} - ${{ env.playstore_name }} - ${{ env.repository_name }} - App bundle(s) AAB release generated
+          name: ${{ env.date_today }}-${{ env.repository_name }}-release-aab
           path: ${{ env.main_project_module }}/build/outputs/bundle/release/
