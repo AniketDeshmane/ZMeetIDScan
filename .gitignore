@@ -1,15 +1,46 @@
-*.iml
+# Gradle files
 .gradle
 /local.properties
+.gradle/
+/build/
+
+# IntelliJ IDEA/Android Studio files
+*.iml
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+/.idea/dictionaries
+/.idea/shelf
+
+# macOS-specific files
 .DS_Store
+
+# Build output
 /build
+**/build/
+
+# Captures
 /captures
+
+# Native build artifacts
 .externalNativeBuild
 .cxx
-local.properties
+
+# Firebase/Crashlytics
+crashlytics-build.properties
+fabric.properties
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# Generated JSON files
+/output.json
