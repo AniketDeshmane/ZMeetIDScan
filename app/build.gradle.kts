@@ -59,7 +59,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation 'androidx.fragment:fragment:1.3.6' 
+    implementation("androidx.fragment:fragment:1.3.6")
     
     // CameraX dependencies
     implementation("androidx.camera:camera-camera2:1.3.2")
