@@ -88,3 +88,14 @@ jobs:
         with:
           name: ${{ env.date_today }}-${{ env.repository_name }}-release-aab
           path: ${{ env.main_project_module }}/build/outputs/bundle/release/
+      
+      - name: 13. Publish Signed APK to GitHub Packages (Generic)
+        run: |
+          SIGNED_APK_PATH="${{ env.main_project_module }}/build/outputs/apk/release/app-release-signed.apk"
+          PACKAGE_VERSION="v${{ github.run_number }}"
+          curl -X PUT \
+            -u "${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            --upload-file "$SIGNED_APK_PATH" \
+            "https://npm.pkg.github.com/${{ github.repository_owner }}/app-release-${PACKAGE_VERSION}.apk"
+
