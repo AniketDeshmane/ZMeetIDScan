@@ -16,7 +16,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    environment: ZMeetIDEnv  # 👈 Add this line to access environment-specific secrets
+    environment: ZMeetIDEnv
 
     steps:
       - name: 1. Checkout code
@@ -47,36 +47,43 @@ jobs:
           ./gradlew assembleRelease
           ./gradlew ${{ env.main_project_module }}:bundleRelease
 
-      # === SIGN RELEASE APK ===
-      - name: 7. Decode and save keystore
+      # === SETUP BUILD TOOLS ===
+      - name: 7. Add Android build-tools to PATH
+        run: |
+          BUILD_TOOLS_PATH=$(find $ANDROID_HOME/build-tools -type d -name "34.*" | sort -V | tail -n 1)
+          echo "Using build-tools at: $BUILD_TOOLS_PATH"
+          echo "$BUILD_TOOLS_PATH" >> $GITHUB_PATH
+
+      # === SIGNING ===
+      - name: 8. Decode and save keystore
         run: |
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-release-key.jks
 
-      - name: 8. Sign release APK
+      - name: 9. Sign release APK
         run: |
           RELEASE_APK="${{ env.main_project_module }}/build/outputs/apk/release/app-release-unsigned.apk"
           SIGNED_APK="${{ env.main_project_module }}/build/outputs/apk/release/app-release-signed.apk"
           zipalign -v -p 4 "$RELEASE_APK" aligned.apk
           apksigner sign --ks my-release-key.jks \
-                         --ks-key-alias ${{ secrets.KEY_ALIAS }} \
-                         --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
-                         --key-pass pass:${{ secrets.KEY_PASSWORD }} \
+                         --ks-key-alias "${{ secrets.KEY_ALIAS }}" \
+                         --ks-pass pass:"${{ secrets.KEYSTORE_PASSWORD }}" \
+                         --key-pass pass:"${{ secrets.KEY_PASSWORD }}" \
                          --out "$SIGNED_APK" aligned.apk
 
       # === UPLOAD ARTIFACTS ===
-      - name: 9. Upload APK Debug
+      - name: 10. Upload APK Debug
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.date_today }}-${{ env.repository_name }}-debug-apk
           path: ${{ env.main_project_module }}/build/outputs/apk/debug/
 
-      - name: 10. Upload Signed APK Release
+      - name: 11. Upload Signed APK Release
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.date_today }}-${{ env.repository_name }}-signed-release-apk
           path: ${{ env.main_project_module }}/build/outputs/apk/release/app-release-signed.apk
 
-      - name: 11. Upload AAB Release
+      - name: 12. Upload AAB Release
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.date_today }}-${{ env.repository_name }}-release-aab
