@@ -1,7 +1,6 @@
 name: Build Android App
 
 env:
-  # The name of the main module repository
   main_project_module: app
 
 on:
@@ -12,75 +11,72 @@ on:
   pull_request:
     branches:
       - 'main'
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment: ZMeetIDEnv  # 👈 Add this line to access environment-specific secrets
 
     steps:
       - name: 1. Checkout code
         uses: actions/checkout@v4
 
-      # Set Current Date As Env Variable
-      - name: 2. Set current date as env variable
-        run: echo "date_today=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+      - name: 2. Set current date and environment variables
+        run: |
+          echo "date_today=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
+          echo "repository_name=$(basename '${{ github.repository }}')" >> $GITHUB_ENV
+          echo "playstore_name=$(echo '${{ github.repository }}' | sed 's/\//-/')" >> $GITHUB_ENV
 
-      # Set Repository Name As Env Variable
-      - name: 3. Set repository name as env variable
-        run: echo "repository_name=$(echo '${{ github.repository }}' | awk -F '/' '{print $2}')" >> $GITHUB_ENV
-
-      # Set Play Store Name without forward slash
-      - name: 4. Set playstore name as env variable
-        run: echo "playstore_name=$(echo '${{ github.repository }}' | sed 's/\//-/')" >> $GITHUB_ENV
-
-      - name: 5. Set Up JDK
+      - name: 3. Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: 'zulu'
           java-version: '17'
           cache: 'gradle'
 
-      - name: 6. Change wrapper permissions
+      - name: 4. Make gradlew executable
         run: chmod +x ./gradlew
 
-      # Run Tests Build
-      - name: 7. Run gradle tests
+      - name: 5. Run unit tests
         run: ./gradlew test
 
-      # Run Build Project
-      - name: 8. Build gradle project
-        run: ./gradlew build
+      - name: 6. Assemble APKs and AAB
+        run: |
+          ./gradlew assembleDebug
+          ./gradlew assembleRelease
+          ./gradlew ${{ env.main_project_module }}:bundleRelease
 
-      # Create APK Debug
-      - name: 9. Build apk debug project (APK)
-        run: ./gradlew assembleDebug
+      # === SIGN RELEASE APK ===
+      - name: 7. Decode and save keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-release-key.jks
 
-      # Create APK Release
-      - name: 10. Build apk release project (APK)
-        run: ./gradlew assemble
+      - name: 8. Sign release APK
+        run: |
+          RELEASE_APK="${{ env.main_project_module }}/build/outputs/apk/release/app-release-unsigned.apk"
+          SIGNED_APK="${{ env.main_project_module }}/build/outputs/apk/release/app-release-signed.apk"
+          zipalign -v -p 4 "$RELEASE_APK" aligned.apk
+          apksigner sign --ks my-release-key.jks \
+                         --ks-key-alias ${{ secrets.KEY_ALIAS }} \
+                         --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} \
+                         --key-pass pass:${{ secrets.KEY_PASSWORD }} \
+                         --out "$SIGNED_APK" aligned.apk
 
-      # Create Bundle AAB Release
-      - name: 11. Build app bundle release (AAB)
-        run: ./gradlew ${{ env.main_project_module }}:bundleRelease
-
-      # Upload APK Debug
-      - name: 12. Upload APK Debug
+      # === UPLOAD ARTIFACTS ===
+      - name: 9. Upload APK Debug
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.date_today }}-${{ env.repository_name }}-debug-apk
           path: ${{ env.main_project_module }}/build/outputs/apk/debug/
 
-      # Upload APK Release
-      - name: 13. Upload APK Release
+      - name: 10. Upload Signed APK Release
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.date_today }}-${{ env.repository_name }}-release-apk
-          path: ${{ env.main_project_module }}/build/outputs/apk/release/
+          name: ${{ env.date_today }}-${{ env.repository_name }}-signed-release-apk
+          path: ${{ env.main_project_module }}/build/outputs/apk/release/app-release-signed.apk
 
-      # Upload AAB Release
-      - name: 14. Upload AAB (App Bundle) Release
+      - name: 11. Upload AAB Release
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.date_today }}-${{ env.repository_name }}-release-aab
