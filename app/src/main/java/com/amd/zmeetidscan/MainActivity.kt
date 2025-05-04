@@ -40,6 +40,10 @@ import androidx.core.content.ContextCompat
 import com.amd.zmeetidscan.ui.theme.ZMeetIDScanTheme
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import androidx.camera.core.CameraControl
+import androidx.camera.core.ExposureState
+import androidx.compose.ui.draw.rotate
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     private lateinit var cameraExecutor: ExecutorService
@@ -90,8 +94,18 @@ class MainActivity : ComponentActivity() {
                             showAppContent.value = true
                         }
                     } else {
+                        // State for camera control and exposure
+                        var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
+                        var exposureState by remember { mutableStateOf<ExposureState?>(null) }
+
                         // Regular app content
                         ScannerScreen(
+                            cameraControl = cameraControl,
+                            exposureState = exposureState,
+                            onCameraBound = { control, state ->
+                                cameraControl = control
+                                exposureState = state
+                            },
                             onQrCodeScanned = { zoomUrl, meetingId ->
                                 showConfirmationDialog = true
                                 detectedMeetingId = meetingId
@@ -119,95 +133,275 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun ScannerScreen(onQrCodeScanned: (String, String) -> Unit) {
+    private fun ScannerScreen(
+        cameraControl: CameraControl?,
+        exposureState: ExposureState?,
+        onCameraBound: (CameraControl, ExposureState) -> Unit,
+        onQrCodeScanned: (String, String) -> Unit
+    ) {
+        // State for the slider value
+        var sliderValue by remember { mutableStateOf(0f) }
+        
+        // Get min and max values from the range safely
+        val minExposure = exposureState?.exposureCompensationRange?.lower ?: 0
+        val maxExposure = exposureState?.exposureCompensationRange?.upper ?: 0
+        
+        // Update slider position when exposure state changes
+        LaunchedEffect(exposureState) {
+            exposureState?.let {
+                sliderValue = it.exposureCompensationIndex.toFloat()
+            }
+        }
+
         Box(modifier = Modifier.fillMaxSize()) {
-            // Camera Preview
-            CameraPreview(onQrCodeScanned)
+            // Camera Preview (always behind everything)
+            CameraPreview(onCameraBound, onQrCodeScanned)
             
-            // Scan frame overlay with colored corners
-            ScannerOverlay()
+            // Scanner overlay with focus window
+            ScannerOverlayWithFocus()
             
-            // Bottom instructions card
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter),
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFF1D1D1D)
-                ),
-                elevation = CardDefaults.cardElevation(
-                    defaultElevation = 8.dp
-                )
+            // Main column containing all UI elements in vertical order
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                // 1. Zoom Meeting Scanner at top
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 20.dp, horizontal = 16.dp)
+                        .background(Color(0x99000000))
+                        .padding(16.dp)
                 ) {
-                    // Handle at the top
-                    Spacer(
-                        modifier = Modifier
-                            .width(40.dp)
-                            .height(4.dp)
-                            .background(Color.Gray, RoundedCornerShape(2.dp))
-                    )
-                    
-                    Spacer(modifier = Modifier.height(24.dp))
-                    
-                    // Title text
                     Text(
-                        text = "Scan any Zoom meeting ID",
+                        text = "Zoom Meeting Scanner",
                         color = Color.White,
                         fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    
-                    Spacer(modifier = Modifier.height(8.dp))
-                    
-                    // Subtitle text
-                    Text(
-                        text = "Point camera at meeting ID or invitation",
-                        color = Color.LightGray,
-                        fontSize = 14.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Bottom handle/indicator
-                    Spacer(
+                }
+                
+                Spacer(modifier = Modifier.weight(1f))
+                
+                // 2. Brightness Slider in middle (above the bottom controls)
+                if (exposureState != null && exposureState.isExposureCompensationSupported && minExposure != maxExposure) {
+                    Card(
                         modifier = Modifier
-                            .width(120.dp)
-                            .height(4.dp)
-                            .background(Color.DarkGray, RoundedCornerShape(2.dp))
+                            .fillMaxWidth()
+                            .padding(horizontal = 32.dp, vertical = 16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xAA000000)
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                "Brightness",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            
+                            Spacer(modifier = Modifier.height(4.dp))
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Moon icon for minimum brightness
+                                Text("🌙", fontSize = 16.sp)
+                                
+                                // Horizontal slider with custom colors for better visibility
+                                Slider(
+                                    value = sliderValue,
+                                    onValueChange = { newValue ->
+                                        sliderValue = newValue
+                                        cameraControl?.setExposureCompensationIndex(newValue.roundToInt())
+                                    },
+                                    valueRange = minExposure.toFloat()..maxExposure.toFloat(),
+                                    steps = (maxExposure - minExposure - 1).coerceAtLeast(0),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(horizontal = 8.dp),
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.White,
+                                        activeTrackColor = Color(0xFF00A2AD),
+                                        inactiveTrackColor = Color(0x99FFFFFF)
+                                    )
+                                )
+                                
+                                // Sun icon for maximum brightness
+                                Text("☀️", fontSize = 16.sp)
+                            }
+                        }
+                    }
+                }
+                
+                // 3. Scan the Meeting section at bottom
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFF1D1D1D)
+                    ),
+                    elevation = CardDefaults.cardElevation(
+                        defaultElevation = 8.dp
                     )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 20.dp, horizontal = 16.dp)
+                    ) {
+                        // Handle at the top
+                        Spacer(
+                            modifier = Modifier
+                                .width(40.dp)
+                                .height(4.dp)
+                                .background(Color.Gray, RoundedCornerShape(2.dp))
+                        )
+                        
+                        Spacer(modifier = Modifier.height(24.dp))
+                        
+                        // Title text
+                        Text(
+                            text = "Scan the Meeting",
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        // Subtitle text
+                        Text(
+                            text = "Point camera at meeting ID or invitation",
+                            color = Color.LightGray,
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Bottom handle/indicator
+                        Spacer(
+                            modifier = Modifier
+                                .width(120.dp)
+                                .height(4.dp)
+                                .background(Color.DarkGray, RoundedCornerShape(2.dp))
+                        )
+                    }
                 }
             }
         }
     }
 
     @Composable
-    private fun ScannerOverlay() {
-        // Overlay that draws the colored corner frame
+    private fun ScannerOverlayWithFocus() {
+        // Overlay that draws the colored corner frame and adds a focus area
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .drawWithContent {
                     drawContent()
                     
-                    val frameWidth = size.width * 0.8f
-                    val frameHeight = frameWidth // Keep it square
-                    val cornerLength = frameWidth / 5
+                    // Define a smaller square for the focus area
+                    val frameSize = size.width * 0.6f  // Reduced from 0.8f to 0.6f
+                    val cornerLength = frameSize / 5
                     val strokeWidth = 8f
                     
                     // Calculate the centered position
-                    val startX = (size.width - frameWidth) / 2
-                    val startY = (size.height - frameHeight) / 2
+                    val startX = (size.width - frameSize) / 2
+                    val startY = (size.height - frameSize) / 2
+                    
+                    // Create dark overlay with transparent center
+                    // Draw four rectangles to create a "hole" in the middle
+                    val overlayColor = Color(0x99000000)  // Semi-transparent black
+                    
+                    // Left rectangle
+                    drawRect(
+                        color = overlayColor,
+                        topLeft = Offset(0f, 0f),
+                        size = androidx.compose.ui.geometry.Size(startX, size.height)
+                    )
+                    
+                    // Top rectangle
+                    drawRect(
+                        color = overlayColor,
+                        topLeft = Offset(startX, 0f),
+                        size = androidx.compose.ui.geometry.Size(frameSize, startY)
+                    )
+                    
+                    // Right rectangle
+                    drawRect(
+                        color = overlayColor,
+                        topLeft = Offset(startX + frameSize, 0f),
+                        size = androidx.compose.ui.geometry.Size(size.width - startX - frameSize, size.height)
+                    )
+                    
+                    // Bottom rectangle
+                    drawRect(
+                        color = overlayColor,
+                        topLeft = Offset(startX, startY + frameSize),
+                        size = androidx.compose.ui.geometry.Size(frameSize, size.height - startY - frameSize)
+                    )
+                    
+                    // Add subtle gradient for smooth transition (4 gradients, one for each side)
+                    val gradientWidth = 40f  // Width of gradient transition
+                    
+                    // Left edge gradient
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(overlayColor, Color.Transparent),
+                            startX = startX - gradientWidth,
+                            endX = startX
+                        ),
+                        topLeft = Offset(startX - gradientWidth, startY),
+                        size = androidx.compose.ui.geometry.Size(gradientWidth, frameSize)
+                    )
+                    
+                    // Top edge gradient
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(overlayColor, Color.Transparent),
+                            startY = startY - gradientWidth,
+                            endY = startY
+                        ),
+                        topLeft = Offset(startX, startY - gradientWidth),
+                        size = androidx.compose.ui.geometry.Size(frameSize, gradientWidth)
+                    )
+                    
+                    // Right edge gradient
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(Color.Transparent, overlayColor),
+                            startX = startX + frameSize,
+                            endX = startX + frameSize + gradientWidth
+                        ),
+                        topLeft = Offset(startX + frameSize, startY),
+                        size = androidx.compose.ui.geometry.Size(gradientWidth, frameSize)
+                    )
+                    
+                    // Bottom edge gradient
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, overlayColor),
+                            startY = startY + frameSize,
+                            endY = startY + frameSize + gradientWidth
+                        ),
+                        topLeft = Offset(startX, startY + frameSize),
+                        size = androidx.compose.ui.geometry.Size(frameSize, gradientWidth)
+                    )
                     
                     // Top-left corner (red)
                     drawLine(
@@ -228,15 +422,15 @@ class MainActivity : ComponentActivity() {
                     // Top-right corner (yellow/orange)
                     drawLine(
                         color = Color(0xFFFFB300), // Orange/Yellow
-                        start = Offset(startX + frameWidth, startY),
-                        end = Offset(startX + frameWidth - cornerLength, startY),
+                        start = Offset(startX + frameSize, startY),
+                        end = Offset(startX + frameSize - cornerLength, startY),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
                     drawLine(
                         color = Color(0xFFFFB300),
-                        start = Offset(startX + frameWidth, startY),
-                        end = Offset(startX + frameWidth, startY + cornerLength),
+                        start = Offset(startX + frameSize, startY),
+                        end = Offset(startX + frameSize, startY + cornerLength),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
@@ -244,15 +438,15 @@ class MainActivity : ComponentActivity() {
                     // Bottom-left corner (blue)
                     drawLine(
                         color = Color(0xFF2196F3), // Blue
-                        start = Offset(startX, startY + frameHeight),
-                        end = Offset(startX + cornerLength, startY + frameHeight),
+                        start = Offset(startX, startY + frameSize),
+                        end = Offset(startX + cornerLength, startY + frameSize),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
                     drawLine(
                         color = Color(0xFF2196F3),
-                        start = Offset(startX, startY + frameHeight),
-                        end = Offset(startX, startY + frameHeight - cornerLength),
+                        start = Offset(startX, startY + frameSize),
+                        end = Offset(startX, startY + frameSize - cornerLength),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
@@ -260,15 +454,15 @@ class MainActivity : ComponentActivity() {
                     // Bottom-right corner (green)
                     drawLine(
                         color = Color(0xFF4CAF50), // Green
-                        start = Offset(startX + frameWidth, startY + frameHeight),
-                        end = Offset(startX + frameWidth - cornerLength, startY + frameHeight),
+                        start = Offset(startX + frameSize, startY + frameSize),
+                        end = Offset(startX + frameSize - cornerLength, startY + frameSize),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
                     drawLine(
                         color = Color(0xFF4CAF50),
-                        start = Offset(startX + frameWidth, startY + frameHeight),
-                        end = Offset(startX + frameWidth, startY + frameHeight - cornerLength),
+                        start = Offset(startX + frameSize, startY + frameSize),
+                        end = Offset(startX + frameSize, startY + frameSize - cornerLength),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
@@ -370,7 +564,10 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun CameraPreview(onQrCodeScanned: (String, String) -> Unit) {
+    private fun CameraPreview(
+        onCameraBound: (CameraControl, ExposureState) -> Unit,
+        onQrCodeScanned: (String, String) -> Unit
+    ) {
         val context = LocalContext.current
         val lifecycleOwner = LocalLifecycleOwner.current
         
@@ -413,12 +610,15 @@ class MainActivity : ComponentActivity() {
                         cameraProvider.unbindAll()
                         
                         // Bind use cases to camera
-                        cameraProvider.bindToLifecycle(
+                        val camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             CameraSelector.DEFAULT_BACK_CAMERA,
                             preview,
                             imageAnalyzer
                         )
+                        // Pass camera control and exposure state back up
+                        onCameraBound(camera.cameraControl, camera.cameraInfo.exposureState)
+
                     } catch (e: Exception) {
                         Log.e(TAG, "Use case binding failed", e)
                     }
