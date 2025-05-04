@@ -12,6 +12,7 @@ import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.util.regex.Pattern
+import java.util.concurrent.atomic.AtomicBoolean
 
 class TextRecognizerAnalyzer(
     private val context: Context,
@@ -19,20 +20,10 @@ class TextRecognizerAnalyzer(
 ) : ImageAnalysis.Analyzer {
     private val recognizer: TextRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     
-    // Patterns to match different Zoom meeting ID formats - preferring complete IDs
-    private val meetingIdPatterns = listOf(
-        // Complete meeting IDs (9-11 digits, with or without hyphens)
-        Pattern.compile("\\b(\\d{3}[ -]?\\d{4}[ -]?\\d{4})\\b"),   // Direct match for 938 5144 6032 with flexible spacing
-        Pattern.compile("\\b(\\d{9,11})\\b"),                      // Direct match for 93851446032 (without hyphens)
-        Pattern.compile("Meeting ID:\\s*(\\d{3}[ -]?\\d{4}[ -]?\\d{4})"), // Meeting ID: 123-456-7890
-        Pattern.compile("Meeting ID[:\\s]+(\\d{3}[ -]?\\d{4}[ -]?\\d{4})"), // Meeting ID: or Meeting ID 123-456-7890
-        Pattern.compile("ID[:\\s]*(\\d{3}[ -]?\\d{4}[ -]?\\d{4})"), // Shorter variant like "ID: 123-456-7890"
-        Pattern.compile("\\b(?:zoom|join).{0,30}?(\\d{3}[ -]?\\d{4}[ -]?\\d{4})"), // Find ID near "zoom" or "join" words
-        
-        // Partial IDs (fall back only if complete ones aren't found)
-        Pattern.compile("\\b(\\d{6,8})\\b"),                       // Partial match for longer numbers that might be IDs
-        Pattern.compile("Meeting ID:\\s*(\\d{3,}[-\\d]*\\d+)"),    // Meeting ID: with at least 3+ digits
-        Pattern.compile("Meeting ID[:\\s]+(\\d{3,}[-\\d]*\\d+)")   // Meeting ID with at least 3+ digits
+    // Optimized pattern for all valid 11-digit Zoom meeting ID formats
+    private val meetingIdPattern = Pattern.compile(
+        "(?:Meeting ID[:\\s]+)?(\\d{3}[ -]?\\d{4}[ -]?\\d{4})|\\b(\\d{11})\\b",
+        Pattern.CASE_INSENSITIVE
     )
     
     // Tag for logging
@@ -40,186 +31,199 @@ class TextRecognizerAnalyzer(
     
     // Track if camera is processing frames
     private var framesProcessed = 0
-    private val frameLogInterval = 30 // Log every 30 frames
+    private val frameLogInterval = 100
     
-    // Add a debounce mechanism to avoid multiple rapid detections
+    // Prevent overlapping processing
+    private val isProcessing = AtomicBoolean(false)
+    
+    // Reduced debounce time for faster detection response
     private var lastDetectionTime = 0L
-    private val detectionCooldown = 2000L // 2 seconds cooldown
+    private val detectionCooldown = 500L
     
     // Define the scan region as a percentage of the center of the image
-    private val scanRegionPercentageWidth = 0.65f  // Narrower detection area (was 0.8f)
-    private val scanRegionPercentageHeight = 0.65f // Make area more square-like
-    
-    // Keep track of partial IDs we've seen to avoid showing too many false positives
-    private val recentPartialIds = mutableSetOf<String>()
+    private val scanRegionPercentageWidth = 0.6f
+    private val scanRegionPercentageHeight = 0.6f
     
     @SuppressLint("UnsafeOptInUsageError")
     override fun analyze(imageProxy: ImageProxy) {
-        // Increment frame counter and log periodically to confirm camera is working
-        framesProcessed++
-        if (framesProcessed % frameLogInterval == 0) {
-            Log.d(TAG, "Camera is active: processed $framesProcessed frames")
+        // Skip if already processing another frame
+        if (isProcessing.getAndSet(true)) {
+            imageProxy.close()
+            return
         }
         
+        // Get image
         val mediaImage = imageProxy.image
+        if (mediaImage == null) {
+            isProcessing.set(false)
+            imageProxy.close()
+            return
+        }
         
-        if (mediaImage != null) {
-            val image = InputImage.fromMediaImage(
+        // Calculate scan region bounds to match the visible square on screen
+        val imageWidth = mediaImage.width
+        val imageHeight = mediaImage.height
+        
+        // Calculate scan region - this must match the UI square with colored corners
+        val centerX = imageWidth / 2
+        val centerY = imageHeight / 2
+        val scanWidth = (imageWidth * scanRegionPercentageWidth).toInt()
+        val scanHeight = (imageHeight * scanRegionPercentageHeight).toInt()
+        
+        // Define the scan rectangle coordinates
+        val scanRect = Rect(
+            centerX - (scanWidth / 2),
+            centerY - (scanHeight / 2),
+            centerX + (scanWidth / 2),
+            centerY + (scanHeight / 2)
+        )
+        
+        // Log the scan area dimensions periodically
+        if (framesProcessed % frameLogInterval == 0) {
+            Log.d(TAG, "Camera active: frames=$framesProcessed, scan area: $scanRect")
+        }
+        framesProcessed++
+        
+        try {
+            // Process the whole image but filter results by scan area
+            val inputImage = InputImage.fromMediaImage(
                 mediaImage,
                 imageProxy.imageInfo.rotationDegrees
             )
             
-            // Calculate the scan region (center area of the image)
-            val imageWidth = mediaImage.width
-            val imageHeight = mediaImage.height
-            
-            // Calculate scan region bounds to match the colored frame shown to user
-            val centerX = imageWidth / 2
-            val centerY = imageHeight / 2
-            
-            val scanWidth = (imageWidth * scanRegionPercentageWidth).toInt()
-            val scanHeight = (imageHeight * scanRegionPercentageHeight).toInt()
-            
-            val left = centerX - (scanWidth / 2)
-            val top = centerY - (scanHeight / 2)
-            val right = centerX + (scanWidth / 2)
-            val bottom = centerY + (scanHeight / 2)
-            
-            val scanRect = Rect(left, top, right, bottom)
-            
-            // Debug logs to understand the scan area dimensions
-            if (framesProcessed % 100 == 0) {
-                Log.d(TAG, "Scan area: Left=$left, Top=$top, Right=$right, Bottom=$bottom")
-                Log.d(TAG, "Image size: Width=$imageWidth, Height=$imageHeight")
-            }
-            
-            recognizer.process(image)
+            recognizer.process(inputImage)
                 .addOnSuccessListener { visionText ->
-                    // Use a more strict filtering approach for text elements
+                    // Filter text elements to only include those inside scan area
                     val filteredText = StringBuilder()
+                    var foundTextInside = false
                     
-                    for (textBlock in visionText.textBlocks) {
-                        // Skip blocks without bounding boxes
-                        val boundingBox = textBlock.boundingBox ?: continue
+                    for (block in visionText.textBlocks) {
+                        val boundingBox = block.boundingBox
                         
-                        // Only include text blocks that are COMPLETELY within scan area
-                        // This is a more strict check than before
-                        if (scanRect.contains(boundingBox)) {
-                            filteredText.append(textBlock.text).append("\n")
-                        } else {
-                            // Debug log for blocks we're rejecting
-                            if (framesProcessed % 100 == 0) {
-                                Log.d(TAG, "Rejected text outside scan area: ${textBlock.text}")
+                        // If block has a valid bounding box
+                        if (boundingBox != null) {
+                            // Must be at least 70% inside the scan area to count
+                            if (isSignificantlyInsideScanArea(boundingBox, scanRect, 0.7f)) {
+                                filteredText.append(block.text).append("\n")
+                                foundTextInside = true
+                                Log.d(TAG, "Text INSIDE scan area: ${block.text}")
+                            } else if (framesProcessed % frameLogInterval == 0) {
+                                // Log rejected text periodically
+                                Log.d(TAG, "Text OUTSIDE scan area (rejected): ${block.text}")
                             }
                         }
                     }
                     
-                    // Process only the filtered text
-                    val text = filteredText.toString()
-                    if (text.isNotEmpty()) {
-                        Log.d(TAG, "OCR text detected INSIDE scan region: ${text.take(100)}...")
-                        processRecognizedText(text)
+                    // Only process if we found text inside the scan area
+                    val textToProcess = filteredText.toString()
+                    if (foundTextInside && textToProcess.isNotEmpty()) {
+                        processText(textToProcess)
                     }
+                    
+                    isProcessing.set(false)
                 }
                 .addOnFailureListener { e ->
-                    Log.e(TAG, "Text recognition failed", e)
+                    Log.e(TAG, "Text recognition failed: ${e.message}")
+                    isProcessing.set(false)
                 }
                 .addOnCompleteListener {
                     imageProxy.close()
                 }
-        } else {
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in analyze: ${e.message}")
+            isProcessing.set(false)
             imageProxy.close()
         }
     }
     
-    // Check if a bounding box is completely inside our scan rectangle
-    // This is a stricter check than the Android Rect.contains() method
-    private fun isCompletelyInsideScanArea(boundingBox: Rect, scanRect: Rect): Boolean {
-        return (boundingBox.left >= scanRect.left &&
-                boundingBox.top >= scanRect.top &&
-                boundingBox.right <= scanRect.right &&
-                boundingBox.bottom <= scanRect.bottom)
+    // Check if bounding box is significantly inside scan area (at least requiredOverlap percentage)
+    private fun isSignificantlyInsideScanArea(boundingBox: Rect, scanRect: Rect, requiredOverlap: Float): Boolean {
+        // Create intersection rectangle
+        val intersection = Rect(boundingBox)
+        if (!intersection.intersect(scanRect)) {
+            return false  // No intersection
+        }
+        
+        // Calculate areas
+        val intersectionArea = intersection.width() * intersection.height().toFloat()
+        val blockArea = boundingBox.width() * boundingBox.height().toFloat()
+        
+        // Calculate percentage of the block that's inside the scan area
+        val overlapPercentage = intersectionArea / blockArea
+        
+        // More lenient - accept even partial overlaps (30% is enough)
+        return overlapPercentage >= 0.30f
     }
-    
-    private fun processRecognizedText(recognizedText: String) {
-        // Apply debounce to avoid multiple rapid detections
+
+    // Process text to find meeting IDs - optimized for speed and reliability
+    private fun processText(text: String) {
+        // Check debounce - apply minimal delay to avoid UI thrashing
         val currentTime = System.currentTimeMillis()
         if (currentTime - lastDetectionTime < detectionCooldown) {
             return
         }
         
-        // First try to find a complete meeting ID (9-11 digits)
-        for (i in 0 until 6) { // First 6 patterns are for complete IDs
-            val pattern = meetingIdPatterns[i]
-            val matcher = pattern.matcher(recognizedText)
+        // Log the actual text being processed for debugging
+        Log.d(TAG, "Processing text for meeting ID: $text")
+        
+        // First try exact pattern matching
+        val matcher = meetingIdPattern.matcher(text)
+        
+        // Track if we found a valid ID
+        var foundValidId = false
+        
+        while (matcher.find()) {
+            // Get the matched ID from whichever group matched
+            val rawMeetingId = matcher.group(1) ?: matcher.group(2)
             
-            if (matcher.find()) {
-                var meetingId = matcher.group(1)
-                if (meetingId != null) {
-                    // Clean up the meeting ID by removing spaces and check length
-                    meetingId = meetingId.replace(" ", "").replace("-", "")
+            if (rawMeetingId != null) {
+                // Clean the meeting ID by removing all non-digits
+                val cleanMeetingId = rawMeetingId.replace(Regex("[^0-9]"), "")
+                
+                Log.d(TAG, "Potential meeting ID found: $cleanMeetingId (length: ${cleanMeetingId.length})")
+                
+                // Only trigger for valid 11-digit meeting IDs
+                if (cleanMeetingId.length == 11) {
+                    Log.d(TAG, "Valid 11-digit Meeting ID detected: $cleanMeetingId")
+                    foundValidId = true
                     
-                    // Only process if it looks like a complete ID (9-11 digits)
-                    if (meetingId.length >= 9 && meetingId.length <= 11) {
-                        Log.d(TAG, "Complete Meeting ID detected: $meetingId")
+                    // Generate URL and validate it's not empty
+                    val zoomUrl = ZoomUrlGenerator.generateZoomUrl(cleanMeetingId)
+                    if (zoomUrl.isNotEmpty()) {
+                        // Update debounce timestamp and trigger callback
                         lastDetectionTime = currentTime
-                        val zoomUrl = ZoomUrlGenerator.generateZoomUrl(meetingId)
-                        onTextRecognized(zoomUrl, meetingId)
+                        onTextRecognized(zoomUrl, formatMeetingId(cleanMeetingId))
                         return
                     }
                 }
             }
         }
         
-        // If Zoom URL is found directly
-        if (recognizedText.contains("zoom.us")) {
-            Log.d(TAG, "Zoom URL detected: $recognizedText")
-            
-            // Try to extract meeting ID from the URL
-            val idMatcher = Pattern.compile("j/(\\d+)").matcher(recognizedText)
-            val meetingId = if (idMatcher.find()) {
-                idMatcher.group(1) ?: "Unknown ID"
-            } else {
-                "Unknown ID"
-            }
-            
-            lastDetectionTime = currentTime
-            onTextRecognized(recognizedText, meetingId)
-            return
-        }
-        
-        // Only fall back to partial IDs as a last resort
-        // Check for partial meeting IDs (less strict patterns)
-        for (i in 6 until meetingIdPatterns.size) {
-            val pattern = meetingIdPatterns[i]
-            val matcher = pattern.matcher(recognizedText)
-            
-            if (matcher.find()) {
-                var meetingId = matcher.group(1)
-                if (meetingId != null) {
-                    meetingId = meetingId.replace(" ", "").replace("-", "")
+        // If no ID found with the pattern, try a fallback approach with numeric sequences
+        if (!foundValidId) {
+            // Find all numeric sequences that could be meeting IDs
+            val numericSequences = Regex("\\d+").findAll(text)
+            for (sequence in numericSequences) {
+                val digits = sequence.value
+                if (digits.length == 11) {
+                    Log.d(TAG, "Fallback: Found 11-digit sequence: $digits")
                     
-                    // Only show partial IDs that are at least 3 digits
-                    if (meetingId.length >= 3) {
-                        // Don't show the same partial ID again
-                        if (!recentPartialIds.contains(meetingId)) {
-                            recentPartialIds.add(meetingId)
-                            // Limit the size of our tracking set
-                            if (recentPartialIds.size > 10) {
-                                recentPartialIds.clear()
-                            }
-                            
-                            Log.d(TAG, "Partial Meeting ID detected: $meetingId")
-                            Log.d(TAG, "Continuing to scan for complete ID...")
-                            // Don't trigger UI for partial IDs, keep scanning
-                            // (Note that we intentionally don't update lastDetectionTime here)
-                            
-                            // Only show partial IDs in a toast, don't trigger the dialog
-                            Toast.makeText(context, "Scanning... found: $meetingId", Toast.LENGTH_SHORT).show()
-                        }
+                    // Generate URL and validate it's not empty
+                    val zoomUrl = ZoomUrlGenerator.generateZoomUrl(digits)
+                    if (zoomUrl.isNotEmpty()) {
+                        // Update debounce timestamp and trigger callback
+                        lastDetectionTime = currentTime
+                        onTextRecognized(zoomUrl, formatMeetingId(digits))
+                        return
                     }
                 }
             }
         }
+    }
+    
+    // Format the meeting ID with hyphens for display (XXX-XXXX-XXXX)
+    private fun formatMeetingId(digits: String): String {
+        if (digits.length != 11) return digits
+        return "${digits.substring(0, 3)}-${digits.substring(3, 7)}-${digits.substring(7)}"
     }
 }
