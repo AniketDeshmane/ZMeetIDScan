@@ -86,6 +86,7 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val showAppContent = remember { mutableStateOf(!DomainManager.isFirstRun(this@MainActivity)) }
+                    var scannerPaused by remember { mutableStateOf(false) }
                     
                     if (!showAppContent.value) {
                         // Show domain setup dialog for first run
@@ -106,10 +107,14 @@ class MainActivity : ComponentActivity() {
                                 cameraControl = control
                                 exposureState = state
                             },
+                            scannerPaused = scannerPaused,
                             onQrCodeScanned = { zoomUrl, meetingId ->
-                                showConfirmationDialog = true
-                                detectedMeetingId = meetingId
-                                detectedZoomUrl = zoomUrl
+                                if (!scannerPaused) {
+                                    scannerPaused = true
+                                    showConfirmationDialog = true
+                                    detectedMeetingId = meetingId
+                                    detectedZoomUrl = zoomUrl
+                                }
                             }
                         )
                         
@@ -120,9 +125,11 @@ class MainActivity : ComponentActivity() {
                                 onConfirm = {
                                     handleRecognizedText(detectedZoomUrl)
                                     showConfirmationDialog = false
+                                    scannerPaused = false
                                 },
                                 onDismiss = {
                                     showConfirmationDialog = false
+                                    scannerPaused = false
                                 }
                             )
                         }
@@ -137,15 +144,19 @@ class MainActivity : ComponentActivity() {
         cameraControl: CameraControl?,
         exposureState: ExposureState?,
         onCameraBound: (CameraControl, ExposureState) -> Unit,
+        scannerPaused: Boolean = false,
         onQrCodeScanned: (String, String) -> Unit
     ) {
-        // State for the slider value
         var sliderValue by remember { mutableStateOf(0f) }
-        
-        // Get min and max values from the range safely
         val minExposure = exposureState?.exposureCompensationRange?.lower ?: 0
         val maxExposure = exposureState?.exposureCompensationRange?.upper ?: 0
-        
+        var lastManualSliderTime by remember { mutableStateOf(0L) }
+        val autoAdjustPauseMs = 3000L
+        val currentTime = System.currentTimeMillis()
+
+        // Auto exposure adjustment state
+        var pendingAutoAdjust by remember { mutableStateOf<Int?>(null) }
+
         // Update slider position when exposure state changes
         LaunchedEffect(exposureState) {
             exposureState?.let {
@@ -153,19 +164,52 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Listen for pending auto-adjust
+        LaunchedEffect(pendingAutoAdjust) {
+            val idx = pendingAutoAdjust
+            if (idx != null && cameraControl != null && exposureState != null) {
+                cameraControl.setExposureCompensationIndex(idx)
+                sliderValue = idx.toFloat()
+                pendingAutoAdjust = null
+            }
+        }
+
         Box(modifier = Modifier.fillMaxSize()) {
             // Camera Preview (always behind everything)
-            CameraPreview(onCameraBound, onQrCodeScanned)
-            
-            // Scanner overlay with focus window
+            CameraPreviewWithBrightnessFeedback(
+                onCameraBound = onCameraBound,
+                onQrCodeScanned = { url, meetingId ->
+                    if (!scannerPaused) {
+                        onQrCodeScanned(url, meetingId)
+                    }
+                },
+                onBrightnessFeedback = { feedback ->
+                    if (cameraControl != null && exposureState != null) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastManualSliderTime > autoAdjustPauseMs) {
+                            val currentIdx = exposureState.exposureCompensationIndex
+                            when (feedback) {
+                                TextRecognizerAnalyzer.BrightnessFeedback.TOO_BRIGHT -> {
+                                    if (currentIdx > minExposure) {
+                                        pendingAutoAdjust = currentIdx - 1
+                                    }
+                                }
+                                TextRecognizerAnalyzer.BrightnessFeedback.TOO_DARK -> {
+                                    if (currentIdx < maxExposure) {
+                                        pendingAutoAdjust = currentIdx + 1
+                                    }
+                                }
+                                else -> {}
+                            }
+                        }
+                    }
+                }
+            )
             ScannerOverlayWithFocus()
-            
-            // Main column containing all UI elements in vertical order
             Column(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // 1. Zoom Meeting Scanner at top
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -181,10 +225,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                
                 Spacer(modifier = Modifier.weight(1f))
-                
-                // 2. Brightness Slider in middle (above the bottom controls)
                 if (exposureState != null && exposureState.isExposureCompensationSupported && minExposure != maxExposure) {
                     Card(
                         modifier = Modifier
@@ -207,22 +248,18 @@ class MainActivity : ComponentActivity() {
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Medium
                             )
-                            
                             Spacer(modifier = Modifier.height(4.dp))
-                            
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Moon icon for minimum brightness
                                 Text("🌙", fontSize = 16.sp)
-                                
-                                // Horizontal slider with custom colors for better visibility
                                 Slider(
                                     value = sliderValue,
                                     onValueChange = { newValue ->
                                         sliderValue = newValue
                                         cameraControl?.setExposureCompensationIndex(newValue.roundToInt())
+                                        lastManualSliderTime = System.currentTimeMillis()
                                     },
                                     valueRange = minExposure.toFloat()..maxExposure.toFloat(),
                                     steps = (maxExposure - minExposure - 1).coerceAtLeast(0),
@@ -235,15 +272,11 @@ class MainActivity : ComponentActivity() {
                                         inactiveTrackColor = Color(0x99FFFFFF)
                                     )
                                 )
-                                
-                                // Sun icon for maximum brightness
                                 Text("☀️", fontSize = 16.sp)
                             }
                         }
                     }
                 }
-                
-                // 3. Scan the Meeting section at bottom
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
@@ -260,17 +293,13 @@ class MainActivity : ComponentActivity() {
                             .fillMaxWidth()
                             .padding(vertical = 20.dp, horizontal = 16.dp)
                     ) {
-                        // Handle at the top
                         Spacer(
                             modifier = Modifier
                                 .width(40.dp)
                                 .height(4.dp)
                                 .background(Color.Gray, RoundedCornerShape(2.dp))
                         )
-                        
                         Spacer(modifier = Modifier.height(24.dp))
-                        
-                        // Title text
                         Text(
                             text = "Scan the Meeting",
                             color = Color.White,
@@ -279,10 +308,7 @@ class MainActivity : ComponentActivity() {
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
-                        
                         Spacer(modifier = Modifier.height(8.dp))
-                        
-                        // Subtitle text
                         Text(
                             text = "Point camera at meeting ID or invitation",
                             color = Color.LightGray,
@@ -290,10 +316,7 @@ class MainActivity : ComponentActivity() {
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
-                        
                         Spacer(modifier = Modifier.height(12.dp))
-
-                        // Bottom handle/indicator
                         Spacer(
                             modifier = Modifier
                                 .width(120.dp)
@@ -511,61 +534,49 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun CameraPreview(
+    private fun CameraPreviewWithBrightnessFeedback(
         onCameraBound: (CameraControl, ExposureState) -> Unit,
-        onQrCodeScanned: (String, String) -> Unit
+        onQrCodeScanned: (String, String) -> Unit,
+        onBrightnessFeedback: (TextRecognizerAnalyzer.BrightnessFeedback) -> Unit
     ) {
         val context = LocalContext.current
         val lifecycleOwner = LocalLifecycleOwner.current
-        
         val previewView = remember { PreviewView(context) }
         val cameraPermissionGranted = ContextCompat.checkSelfPermission(
             context, 
             Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
-        
         AndroidView(
             factory = { previewView },
             modifier = Modifier.fillMaxSize()
         ) {
             if (cameraPermissionGranted) {
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-                
                 cameraProviderFuture.addListener({
                     val cameraProvider = cameraProviderFuture.get()
-                    
-                    // Preview use case
                     val preview = Preview.Builder().build().also {
                         it.setSurfaceProvider(previewView.surfaceProvider)
                     }
-                    
-                    // Image analysis use case
                     val imageAnalyzer = ImageAnalysis.Builder()
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
                         .also {
                             it.setAnalyzer(
                                 cameraExecutor,
-                                TextRecognizerAnalyzer(context) { url, meetingId ->
+                                TextRecognizerAnalyzer(context, { url, meetingId ->
                                     onQrCodeScanned(url, meetingId)
-                                }
+                                }, onBrightnessFeedback)
                             )
                         }
-                    
                     try {
-                        // Unbind all use cases before rebinding
                         cameraProvider.unbindAll()
-                        
-                        // Bind use cases to camera
                         val camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             CameraSelector.DEFAULT_BACK_CAMERA,
                             preview,
                             imageAnalyzer
                         )
-                        // Pass camera control and exposure state back up
                         onCameraBound(camera.cameraControl, camera.cameraInfo.exposureState)
-
                     } catch (e: Exception) {
                         Log.e(TAG, "Use case binding failed", e)
                     }
