@@ -308,7 +308,6 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun ScannerOverlayWithFocus() {
-        // Overlay that draws the colored corner frame and adds a focus area
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -316,96 +315,46 @@ class MainActivity : ComponentActivity() {
                     drawContent()
                     
                     // Define a smaller square for the focus area
-                    val frameSize = size.width * 0.6f  // Reduced from 0.8f to 0.6f
+                    val frameSize = size.width * 0.6f
                     val cornerLength = frameSize / 5
                     val strokeWidth = 8f
                     
-                    // Calculate the centered position
+                    // Move the box slightly upwards (e.g., 48.dp)
+                    val yOffset = 48.dp.toPx() // You can adjust this value as needed
                     val startX = (size.width - frameSize) / 2
-                    val startY = (size.height - frameSize) / 2
+                    val startY = (size.height - frameSize) / 2 - yOffset
                     
-                    // Create dark overlay with transparent center
+                    // Create fully opaque overlay with transparent center
+                    val overlayColor = Color(0xFF000000)
+                    
                     // Draw four rectangles to create a "hole" in the middle
-                    val overlayColor = Color(0x99000000)  // Semi-transparent black
-                    
                     // Left rectangle
                     drawRect(
                         color = overlayColor,
                         topLeft = Offset(0f, 0f),
                         size = androidx.compose.ui.geometry.Size(startX, size.height)
                     )
-                    
                     // Top rectangle
                     drawRect(
                         color = overlayColor,
                         topLeft = Offset(startX, 0f),
                         size = androidx.compose.ui.geometry.Size(frameSize, startY)
                     )
-                    
                     // Right rectangle
                     drawRect(
                         color = overlayColor,
                         topLeft = Offset(startX + frameSize, 0f),
                         size = androidx.compose.ui.geometry.Size(size.width - startX - frameSize, size.height)
                     )
-                    
                     // Bottom rectangle
                     drawRect(
                         color = overlayColor,
                         topLeft = Offset(startX, startY + frameSize),
                         size = androidx.compose.ui.geometry.Size(frameSize, size.height - startY - frameSize)
                     )
-                    
-                    // Add subtle gradient for smooth transition (4 gradients, one for each side)
-                    val gradientWidth = 40f  // Width of gradient transition
-                    
-                    // Left edge gradient
-                    drawRect(
-                        brush = Brush.horizontalGradient(
-                            colors = listOf(overlayColor, Color.Transparent),
-                            startX = startX - gradientWidth,
-                            endX = startX
-                        ),
-                        topLeft = Offset(startX - gradientWidth, startY),
-                        size = androidx.compose.ui.geometry.Size(gradientWidth, frameSize)
-                    )
-                    
-                    // Top edge gradient
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(overlayColor, Color.Transparent),
-                            startY = startY - gradientWidth,
-                            endY = startY
-                        ),
-                        topLeft = Offset(startX, startY - gradientWidth),
-                        size = androidx.compose.ui.geometry.Size(frameSize, gradientWidth)
-                    )
-                    
-                    // Right edge gradient
-                    drawRect(
-                        brush = Brush.horizontalGradient(
-                            colors = listOf(Color.Transparent, overlayColor),
-                            startX = startX + frameSize,
-                            endX = startX + frameSize + gradientWidth
-                        ),
-                        topLeft = Offset(startX + frameSize, startY),
-                        size = androidx.compose.ui.geometry.Size(gradientWidth, frameSize)
-                    )
-                    
-                    // Bottom edge gradient
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, overlayColor),
-                            startY = startY + frameSize,
-                            endY = startY + frameSize + gradientWidth
-                        ),
-                        topLeft = Offset(startX, startY + frameSize),
-                        size = androidx.compose.ui.geometry.Size(frameSize, gradientWidth)
-                    )
-                    
-                    // Top-left corner (red)
+                    // Draw colored corner markers
                     drawLine(
-                        color = Color(0xFFFF5252), // Red
+                        color = Color(0xFFFF5252),
                         start = Offset(startX, startY),
                         end = Offset(startX + cornerLength, startY),
                         strokeWidth = strokeWidth,
@@ -418,44 +367,38 @@ class MainActivity : ComponentActivity() {
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
-                    
-                    // Top-right corner (yellow/orange)
                     drawLine(
-                        color = Color(0xFFFFB300), // Orange/Yellow
-                        start = Offset(startX + frameSize, startY),
-                        end = Offset(startX + frameSize - cornerLength, startY),
+                        color = Color(0xFFFFEB3B),
+                        start = Offset(startX + frameSize - cornerLength, startY),
+                        end = Offset(startX + frameSize, startY),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
                     drawLine(
-                        color = Color(0xFFFFB300),
+                        color = Color(0xFFFFEB3B),
                         start = Offset(startX + frameSize, startY),
                         end = Offset(startX + frameSize, startY + cornerLength),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
-                    
-                    // Bottom-left corner (blue)
                     drawLine(
-                        color = Color(0xFF2196F3), // Blue
-                        start = Offset(startX, startY + frameSize),
-                        end = Offset(startX + cornerLength, startY + frameSize),
+                        color = Color(0xFF2196F3),
+                        start = Offset(startX, startY + frameSize - cornerLength),
+                        end = Offset(startX, startY + frameSize),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
                     drawLine(
                         color = Color(0xFF2196F3),
                         start = Offset(startX, startY + frameSize),
-                        end = Offset(startX, startY + frameSize - cornerLength),
+                        end = Offset(startX + cornerLength, startY + frameSize),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
-                    
-                    // Bottom-right corner (green)
                     drawLine(
-                        color = Color(0xFF4CAF50), // Green
-                        start = Offset(startX + frameSize, startY + frameSize),
-                        end = Offset(startX + frameSize - cornerLength, startY + frameSize),
+                        color = Color(0xFF4CAF50),
+                        start = Offset(startX + frameSize - cornerLength, startY + frameSize),
+                        end = Offset(startX + frameSize, startY + frameSize),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
@@ -477,6 +420,7 @@ class MainActivity : ComponentActivity() {
         onDismiss: () -> Unit
     ) {
         val context = LocalContext.current
+        val colorScheme = MaterialTheme.colorScheme
         
         AlertDialog(
             onDismissRequest = onDismiss,
@@ -486,14 +430,16 @@ class MainActivity : ComponentActivity() {
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colorScheme.onSurface
                 )
             },
             text = { 
                 Text(
                     text = "Do you want to join Zoom meeting with\nID: $meetingId?",
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colorScheme.onSurface
                 )
             },
             confirmButton = {
@@ -501,7 +447,7 @@ class MainActivity : ComponentActivity() {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    // Join Meeting button (teal)
+                    // Join Meeting button (primary color)
                     Button(
                         onClick = onConfirm,
                         modifier = Modifier
@@ -509,7 +455,8 @@ class MainActivity : ComponentActivity() {
                             .height(50.dp),
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF00A2AD) // Teal color from screenshot
+                            containerColor = colorScheme.primary,
+                            contentColor = colorScheme.onPrimary
                         )
                     ) {
                         Text("Join Meeting", fontSize = 16.sp)
@@ -517,7 +464,7 @@ class MainActivity : ComponentActivity() {
                     
                     Spacer(modifier = Modifier.height(12.dp))
                     
-                    // Copy URL button (white with teal outline)
+                    // Copy URL button (outlined)
                     OutlinedButton(
                         onClick = {
                             val webUrl = ZoomUrlGenerator.generateWebUrl(
@@ -537,10 +484,10 @@ class MainActivity : ComponentActivity() {
                             .height(50.dp),
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = Color(0xFF00A2AD), // Teal text
-                            containerColor = Color.White
+                            contentColor = colorScheme.primary,
+                            containerColor = colorScheme.surface
                         ),
-                        border = BorderStroke(1.dp, Color(0xFF00A2AD))
+                        border = BorderStroke(1.dp, colorScheme.primary)
                     ) {
                         Text("Copy URL", fontSize = 16.sp)
                     }
@@ -552,12 +499,12 @@ class MainActivity : ComponentActivity() {
                         onClick = onDismiss,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Cancel", color = Color.Gray)
+                        Text("Cancel", color = colorScheme.onSurface)
                     }
                 }
             },
             dismissButton = null,
-            containerColor = Color.White,
+            containerColor = colorScheme.surface,
             shape = RoundedCornerShape(24.dp),
             properties = DialogProperties(dismissOnClickOutside = true, dismissOnBackPress = true)
         )
