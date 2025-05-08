@@ -16,7 +16,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class TextRecognizerAnalyzer(
     private val context: Context,
-    private val onTextRecognized: (String, String) -> Unit
+    private val onTextRecognized: (String, String) -> Unit,
+    private val onBrightnessFeedback: ((BrightnessFeedback) -> Unit)? = null
 ) : ImageAnalysis.Analyzer {
     private val recognizer: TextRecognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     
@@ -43,6 +44,8 @@ class TextRecognizerAnalyzer(
     // Define the scan region as a percentage of the center of the image
     private val scanRegionPercentageWidth = 0.6f
     private val scanRegionPercentageHeight = 0.6f
+    
+    enum class BrightnessFeedback { TOO_BRIGHT, TOO_DARK, OK }
     
     @SuppressLint("UnsafeOptInUsageError")
     override fun analyze(imageProxy: ImageProxy) {
@@ -118,6 +121,15 @@ class TextRecognizerAnalyzer(
                     val textToProcess = filteredText.toString()
                     if (foundTextInside && textToProcess.isNotEmpty()) {
                         processText(textToProcess)
+                        onBrightnessFeedback?.invoke(BrightnessFeedback.OK)
+                    } else {
+                        // If no text found, estimate brightness
+                        val brightness = estimateBrightness(mediaImage)
+                        when {
+                            brightness > 180 -> onBrightnessFeedback?.invoke(BrightnessFeedback.TOO_BRIGHT)
+                            brightness < 60 -> onBrightnessFeedback?.invoke(BrightnessFeedback.TOO_DARK)
+                            else -> onBrightnessFeedback?.invoke(BrightnessFeedback.OK)
+                        }
                     }
                     
                     isProcessing.set(false)
@@ -225,5 +237,17 @@ class TextRecognizerAnalyzer(
     private fun formatMeetingId(digits: String): String {
         if (digits.length != 11) return digits
         return "${digits.substring(0, 3)}-${digits.substring(3, 7)}-${digits.substring(7)}"
+    }
+
+    // Estimate average brightness from the Y plane (luminance)
+    private fun estimateBrightness(mediaImage: android.media.Image): Int {
+        val yBuffer = mediaImage.planes[0].buffer
+        var sum = 0L
+        var count = 0
+        while (yBuffer.hasRemaining()) {
+            sum += (yBuffer.get().toInt() and 0xFF)
+            count++
+        }
+        return if (count > 0) (sum / count).toInt() else 128
     }
 }

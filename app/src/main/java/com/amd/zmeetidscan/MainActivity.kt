@@ -86,6 +86,7 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val showAppContent = remember { mutableStateOf(!DomainManager.isFirstRun(this@MainActivity)) }
+                    var scannerPaused by remember { mutableStateOf(false) }
                     
                     if (!showAppContent.value) {
                         // Show domain setup dialog for first run
@@ -106,10 +107,14 @@ class MainActivity : ComponentActivity() {
                                 cameraControl = control
                                 exposureState = state
                             },
+                            scannerPaused = scannerPaused,
                             onQrCodeScanned = { zoomUrl, meetingId ->
-                                showConfirmationDialog = true
-                                detectedMeetingId = meetingId
-                                detectedZoomUrl = zoomUrl
+                                if (!scannerPaused) {
+                                    scannerPaused = true
+                                    showConfirmationDialog = true
+                                    detectedMeetingId = meetingId
+                                    detectedZoomUrl = zoomUrl
+                                }
                             }
                         )
                         
@@ -120,9 +125,11 @@ class MainActivity : ComponentActivity() {
                                 onConfirm = {
                                     handleRecognizedText(detectedZoomUrl)
                                     showConfirmationDialog = false
+                                    scannerPaused = false
                                 },
                                 onDismiss = {
                                     showConfirmationDialog = false
+                                    scannerPaused = false
                                 }
                             )
                         }
@@ -137,15 +144,19 @@ class MainActivity : ComponentActivity() {
         cameraControl: CameraControl?,
         exposureState: ExposureState?,
         onCameraBound: (CameraControl, ExposureState) -> Unit,
+        scannerPaused: Boolean = false,
         onQrCodeScanned: (String, String) -> Unit
     ) {
-        // State for the slider value
         var sliderValue by remember { mutableStateOf(0f) }
-        
-        // Get min and max values from the range safely
         val minExposure = exposureState?.exposureCompensationRange?.lower ?: 0
         val maxExposure = exposureState?.exposureCompensationRange?.upper ?: 0
-        
+        var lastManualSliderTime by remember { mutableStateOf(0L) }
+        val autoAdjustPauseMs = 3000L
+        val currentTime = System.currentTimeMillis()
+
+        // Auto exposure adjustment state
+        var pendingAutoAdjust by remember { mutableStateOf<Int?>(null) }
+
         // Update slider position when exposure state changes
         LaunchedEffect(exposureState) {
             exposureState?.let {
@@ -153,19 +164,52 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Listen for pending auto-adjust
+        LaunchedEffect(pendingAutoAdjust) {
+            val idx = pendingAutoAdjust
+            if (idx != null && cameraControl != null && exposureState != null) {
+                cameraControl.setExposureCompensationIndex(idx)
+                sliderValue = idx.toFloat()
+                pendingAutoAdjust = null
+            }
+        }
+
         Box(modifier = Modifier.fillMaxSize()) {
             // Camera Preview (always behind everything)
-            CameraPreview(onCameraBound, onQrCodeScanned)
-            
-            // Scanner overlay with focus window
+            CameraPreviewWithBrightnessFeedback(
+                onCameraBound = onCameraBound,
+                onQrCodeScanned = { url, meetingId ->
+                    if (!scannerPaused) {
+                        onQrCodeScanned(url, meetingId)
+                    }
+                },
+                onBrightnessFeedback = { feedback ->
+                    if (cameraControl != null && exposureState != null) {
+                        val now = System.currentTimeMillis()
+                        if (now - lastManualSliderTime > autoAdjustPauseMs) {
+                            val currentIdx = exposureState.exposureCompensationIndex
+                            when (feedback) {
+                                TextRecognizerAnalyzer.BrightnessFeedback.TOO_BRIGHT -> {
+                                    if (currentIdx > minExposure) {
+                                        pendingAutoAdjust = currentIdx - 1
+                                    }
+                                }
+                                TextRecognizerAnalyzer.BrightnessFeedback.TOO_DARK -> {
+                                    if (currentIdx < maxExposure) {
+                                        pendingAutoAdjust = currentIdx + 1
+                                    }
+                                }
+                                else -> {}
+                            }
+                        }
+                    }
+                }
+            )
             ScannerOverlayWithFocus()
-            
-            // Main column containing all UI elements in vertical order
             Column(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // 1. Zoom Meeting Scanner at top
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -181,10 +225,7 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                
                 Spacer(modifier = Modifier.weight(1f))
-                
-                // 2. Brightness Slider in middle (above the bottom controls)
                 if (exposureState != null && exposureState.isExposureCompensationSupported && minExposure != maxExposure) {
                     Card(
                         modifier = Modifier
@@ -207,22 +248,18 @@ class MainActivity : ComponentActivity() {
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Medium
                             )
-                            
                             Spacer(modifier = Modifier.height(4.dp))
-                            
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Moon icon for minimum brightness
                                 Text("🌙", fontSize = 16.sp)
-                                
-                                // Horizontal slider with custom colors for better visibility
                                 Slider(
                                     value = sliderValue,
                                     onValueChange = { newValue ->
                                         sliderValue = newValue
                                         cameraControl?.setExposureCompensationIndex(newValue.roundToInt())
+                                        lastManualSliderTime = System.currentTimeMillis()
                                     },
                                     valueRange = minExposure.toFloat()..maxExposure.toFloat(),
                                     steps = (maxExposure - minExposure - 1).coerceAtLeast(0),
@@ -235,15 +272,11 @@ class MainActivity : ComponentActivity() {
                                         inactiveTrackColor = Color(0x99FFFFFF)
                                     )
                                 )
-                                
-                                // Sun icon for maximum brightness
                                 Text("☀️", fontSize = 16.sp)
                             }
                         }
                     }
                 }
-                
-                // 3. Scan the Meeting section at bottom
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
@@ -260,17 +293,13 @@ class MainActivity : ComponentActivity() {
                             .fillMaxWidth()
                             .padding(vertical = 20.dp, horizontal = 16.dp)
                     ) {
-                        // Handle at the top
                         Spacer(
                             modifier = Modifier
                                 .width(40.dp)
                                 .height(4.dp)
                                 .background(Color.Gray, RoundedCornerShape(2.dp))
                         )
-                        
                         Spacer(modifier = Modifier.height(24.dp))
-                        
-                        // Title text
                         Text(
                             text = "Scan the Meeting",
                             color = Color.White,
@@ -279,10 +308,7 @@ class MainActivity : ComponentActivity() {
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
-                        
                         Spacer(modifier = Modifier.height(8.dp))
-                        
-                        // Subtitle text
                         Text(
                             text = "Point camera at meeting ID or invitation",
                             color = Color.LightGray,
@@ -290,10 +316,7 @@ class MainActivity : ComponentActivity() {
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth()
                         )
-                        
                         Spacer(modifier = Modifier.height(12.dp))
-
-                        // Bottom handle/indicator
                         Spacer(
                             modifier = Modifier
                                 .width(120.dp)
@@ -308,7 +331,6 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun ScannerOverlayWithFocus() {
-        // Overlay that draws the colored corner frame and adds a focus area
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -316,96 +338,46 @@ class MainActivity : ComponentActivity() {
                     drawContent()
                     
                     // Define a smaller square for the focus area
-                    val frameSize = size.width * 0.6f  // Reduced from 0.8f to 0.6f
+                    val frameSize = size.width * 0.6f
                     val cornerLength = frameSize / 5
                     val strokeWidth = 8f
                     
-                    // Calculate the centered position
+                    // Move the box slightly upwards (e.g., 48.dp)
+                    val yOffset = 48.dp.toPx() // You can adjust this value as needed
                     val startX = (size.width - frameSize) / 2
-                    val startY = (size.height - frameSize) / 2
+                    val startY = (size.height - frameSize) / 2 - yOffset
                     
-                    // Create dark overlay with transparent center
+                    // Create fully opaque overlay with transparent center
+                    val overlayColor = Color(0xFF000000)
+                    
                     // Draw four rectangles to create a "hole" in the middle
-                    val overlayColor = Color(0x99000000)  // Semi-transparent black
-                    
                     // Left rectangle
                     drawRect(
                         color = overlayColor,
                         topLeft = Offset(0f, 0f),
                         size = androidx.compose.ui.geometry.Size(startX, size.height)
                     )
-                    
                     // Top rectangle
                     drawRect(
                         color = overlayColor,
                         topLeft = Offset(startX, 0f),
                         size = androidx.compose.ui.geometry.Size(frameSize, startY)
                     )
-                    
                     // Right rectangle
                     drawRect(
                         color = overlayColor,
                         topLeft = Offset(startX + frameSize, 0f),
                         size = androidx.compose.ui.geometry.Size(size.width - startX - frameSize, size.height)
                     )
-                    
                     // Bottom rectangle
                     drawRect(
                         color = overlayColor,
                         topLeft = Offset(startX, startY + frameSize),
                         size = androidx.compose.ui.geometry.Size(frameSize, size.height - startY - frameSize)
                     )
-                    
-                    // Add subtle gradient for smooth transition (4 gradients, one for each side)
-                    val gradientWidth = 40f  // Width of gradient transition
-                    
-                    // Left edge gradient
-                    drawRect(
-                        brush = Brush.horizontalGradient(
-                            colors = listOf(overlayColor, Color.Transparent),
-                            startX = startX - gradientWidth,
-                            endX = startX
-                        ),
-                        topLeft = Offset(startX - gradientWidth, startY),
-                        size = androidx.compose.ui.geometry.Size(gradientWidth, frameSize)
-                    )
-                    
-                    // Top edge gradient
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(overlayColor, Color.Transparent),
-                            startY = startY - gradientWidth,
-                            endY = startY
-                        ),
-                        topLeft = Offset(startX, startY - gradientWidth),
-                        size = androidx.compose.ui.geometry.Size(frameSize, gradientWidth)
-                    )
-                    
-                    // Right edge gradient
-                    drawRect(
-                        brush = Brush.horizontalGradient(
-                            colors = listOf(Color.Transparent, overlayColor),
-                            startX = startX + frameSize,
-                            endX = startX + frameSize + gradientWidth
-                        ),
-                        topLeft = Offset(startX + frameSize, startY),
-                        size = androidx.compose.ui.geometry.Size(gradientWidth, frameSize)
-                    )
-                    
-                    // Bottom edge gradient
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, overlayColor),
-                            startY = startY + frameSize,
-                            endY = startY + frameSize + gradientWidth
-                        ),
-                        topLeft = Offset(startX, startY + frameSize),
-                        size = androidx.compose.ui.geometry.Size(frameSize, gradientWidth)
-                    )
-                    
-                    // Top-left corner (red)
+                    // Draw colored corner markers
                     drawLine(
-                        color = Color(0xFFFF5252), // Red
+                        color = Color(0xFFFF5252),
                         start = Offset(startX, startY),
                         end = Offset(startX + cornerLength, startY),
                         strokeWidth = strokeWidth,
@@ -418,44 +390,38 @@ class MainActivity : ComponentActivity() {
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
-                    
-                    // Top-right corner (yellow/orange)
                     drawLine(
-                        color = Color(0xFFFFB300), // Orange/Yellow
-                        start = Offset(startX + frameSize, startY),
-                        end = Offset(startX + frameSize - cornerLength, startY),
+                        color = Color(0xFFFFEB3B),
+                        start = Offset(startX + frameSize - cornerLength, startY),
+                        end = Offset(startX + frameSize, startY),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
                     drawLine(
-                        color = Color(0xFFFFB300),
+                        color = Color(0xFFFFEB3B),
                         start = Offset(startX + frameSize, startY),
                         end = Offset(startX + frameSize, startY + cornerLength),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
-                    
-                    // Bottom-left corner (blue)
                     drawLine(
-                        color = Color(0xFF2196F3), // Blue
-                        start = Offset(startX, startY + frameSize),
-                        end = Offset(startX + cornerLength, startY + frameSize),
+                        color = Color(0xFF2196F3),
+                        start = Offset(startX, startY + frameSize - cornerLength),
+                        end = Offset(startX, startY + frameSize),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
                     drawLine(
                         color = Color(0xFF2196F3),
                         start = Offset(startX, startY + frameSize),
-                        end = Offset(startX, startY + frameSize - cornerLength),
+                        end = Offset(startX + cornerLength, startY + frameSize),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
-                    
-                    // Bottom-right corner (green)
                     drawLine(
-                        color = Color(0xFF4CAF50), // Green
-                        start = Offset(startX + frameSize, startY + frameSize),
-                        end = Offset(startX + frameSize - cornerLength, startY + frameSize),
+                        color = Color(0xFF4CAF50),
+                        start = Offset(startX + frameSize - cornerLength, startY + frameSize),
+                        end = Offset(startX + frameSize, startY + frameSize),
                         strokeWidth = strokeWidth,
                         cap = StrokeCap.Round
                     )
@@ -477,6 +443,7 @@ class MainActivity : ComponentActivity() {
         onDismiss: () -> Unit
     ) {
         val context = LocalContext.current
+        val colorScheme = MaterialTheme.colorScheme
         
         AlertDialog(
             onDismissRequest = onDismiss,
@@ -486,14 +453,16 @@ class MainActivity : ComponentActivity() {
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colorScheme.onSurface
                 )
             },
             text = { 
                 Text(
                     text = "Do you want to join Zoom meeting with\nID: $meetingId?",
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    color = colorScheme.onSurface
                 )
             },
             confirmButton = {
@@ -501,7 +470,7 @@ class MainActivity : ComponentActivity() {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    // Join Meeting button (teal)
+                    // Join Meeting button (primary color)
                     Button(
                         onClick = onConfirm,
                         modifier = Modifier
@@ -509,7 +478,8 @@ class MainActivity : ComponentActivity() {
                             .height(50.dp),
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF00A2AD) // Teal color from screenshot
+                            containerColor = colorScheme.primary,
+                            contentColor = colorScheme.onPrimary
                         )
                     ) {
                         Text("Join Meeting", fontSize = 16.sp)
@@ -517,7 +487,7 @@ class MainActivity : ComponentActivity() {
                     
                     Spacer(modifier = Modifier.height(12.dp))
                     
-                    // Copy URL button (white with teal outline)
+                    // Copy URL button (outlined)
                     OutlinedButton(
                         onClick = {
                             val webUrl = ZoomUrlGenerator.generateWebUrl(
@@ -537,10 +507,10 @@ class MainActivity : ComponentActivity() {
                             .height(50.dp),
                         shape = RoundedCornerShape(24.dp),
                         colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = Color(0xFF00A2AD), // Teal text
-                            containerColor = Color.White
+                            contentColor = colorScheme.primary,
+                            containerColor = colorScheme.surface
                         ),
-                        border = BorderStroke(1.dp, Color(0xFF00A2AD))
+                        border = BorderStroke(1.dp, colorScheme.primary)
                     ) {
                         Text("Copy URL", fontSize = 16.sp)
                     }
@@ -552,73 +522,61 @@ class MainActivity : ComponentActivity() {
                         onClick = onDismiss,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Cancel", color = Color.Gray)
+                        Text("Cancel", color = colorScheme.onSurface)
                     }
                 }
             },
             dismissButton = null,
-            containerColor = Color.White,
+            containerColor = colorScheme.surface,
             shape = RoundedCornerShape(24.dp),
             properties = DialogProperties(dismissOnClickOutside = true, dismissOnBackPress = true)
         )
     }
 
     @Composable
-    private fun CameraPreview(
+    private fun CameraPreviewWithBrightnessFeedback(
         onCameraBound: (CameraControl, ExposureState) -> Unit,
-        onQrCodeScanned: (String, String) -> Unit
+        onQrCodeScanned: (String, String) -> Unit,
+        onBrightnessFeedback: (TextRecognizerAnalyzer.BrightnessFeedback) -> Unit
     ) {
         val context = LocalContext.current
         val lifecycleOwner = LocalLifecycleOwner.current
-        
         val previewView = remember { PreviewView(context) }
         val cameraPermissionGranted = ContextCompat.checkSelfPermission(
             context, 
             Manifest.permission.CAMERA
         ) == PackageManager.PERMISSION_GRANTED
-        
         AndroidView(
             factory = { previewView },
             modifier = Modifier.fillMaxSize()
         ) {
             if (cameraPermissionGranted) {
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-                
                 cameraProviderFuture.addListener({
                     val cameraProvider = cameraProviderFuture.get()
-                    
-                    // Preview use case
                     val preview = Preview.Builder().build().also {
                         it.setSurfaceProvider(previewView.surfaceProvider)
                     }
-                    
-                    // Image analysis use case
                     val imageAnalyzer = ImageAnalysis.Builder()
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
                         .also {
                             it.setAnalyzer(
                                 cameraExecutor,
-                                TextRecognizerAnalyzer(context) { url, meetingId ->
+                                TextRecognizerAnalyzer(context, { url, meetingId ->
                                     onQrCodeScanned(url, meetingId)
-                                }
+                                }, onBrightnessFeedback)
                             )
                         }
-                    
                     try {
-                        // Unbind all use cases before rebinding
                         cameraProvider.unbindAll()
-                        
-                        // Bind use cases to camera
                         val camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             CameraSelector.DEFAULT_BACK_CAMERA,
                             preview,
                             imageAnalyzer
                         )
-                        // Pass camera control and exposure state back up
                         onCameraBound(camera.cameraControl, camera.cameraInfo.exposureState)
-
                     } catch (e: Exception) {
                         Log.e(TAG, "Use case binding failed", e)
                     }
